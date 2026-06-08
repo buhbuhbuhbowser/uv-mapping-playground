@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UV 03 — Beyond RGB: PBR texture channels</title>
+<style>
+  body { margin:0; font-family:system-ui,sans-serif; background:#111; color:#ddd; }
+  #wrap { display:flex; height:100vh; }
+  #view { flex:1; }
+  #panel { width:340px; padding:16px; box-sizing:border-box; background:#191919; overflow:auto; }
+  h1 { font-size:15px; margin:0 0 8px; color:#fff; }
+  p { font-size:12px; line-height:1.5; color:#aaa; }
+  label { font-size:12px; display:flex; align-items:center; gap:8px; margin:6px 0; }
+  .swatch { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+  .swatch figure { margin:0; text-align:center; }
+  .swatch canvas { width:84px; height:84px; border:1px solid #333; image-rendering:pixelated; }
+  .swatch figcaption { font-size:9px; color:#888; }
+  code { color:#fc9; } b { color:#cde; }
+  input[type=range]{ width:100%; }
+  a { color:#9cf; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="view"></div>
+  <div id="panel">
+    <h1>03 · "More than RGB" = more images on the same UVs</h1>
+    <p>The geometry and the UVs do not change. We just sample <i>extra images</i> at those
+       same <code>(u,v)</code> coords, each feeding a different physical property:</p>
+    <p>• <b>Albedo</b> — base color (the only thing plain RGB gives you).<br>
+       • <b>Normal</b> — fakes bumps by tilting the surface normal per-pixel. <i>No geometry added.</i><br>
+       • <b>Roughness</b> — matte vs glossy, per pixel.<br>
+       • <b>Metalness</b> — dielectric vs metal.<br>
+       • <b>AO</b> — baked contact shadow in crevices.</p>
+    <p>Toggle each map and orbit the light. The bumps you'll see are <b>entirely the normal
+       map</b> — the mesh is a smooth plane.</p>
+
+    <label><input type="checkbox" id="m_map" checked> Albedo (base color)</label>
+    <label><input type="checkbox" id="m_normal" checked> Normal map (fake bumps)</label>
+    <label><input type="checkbox" id="m_rough" checked> Roughness map</label>
+    <label><input type="checkbox" id="m_metal"> Metalness map</label>
+    <label><input type="checkbox" id="m_ao" checked> Ambient occlusion</label>
+
+    <p style="margin-top:12px">Light angle</p>
+    <input type="range" id="light" min="0" max="6.28" step="0.01" value="1">
+    <p>Normal strength</p>
+    <input type="range" id="nstr" min="0" max="3" step="0.05" value="1">
+
+    <p style="margin-top:12px">The actual texture images (all sampled with the same UVs):</p>
+    <div class="swatch" id="swatch"></div>
+    <p><a href="02-unwrap.html">← unwrapping</a> · <a href="index.html">index</a></p>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---------- build a coherent material set from ONE height field ----------
+// "studs on a plate": a grid of raised circular bumps. We compute a height map,
+// then derive albedo / normal / roughness / metal / AO so they all agree.
+const S=512, N=6, cell=S/N, R=cell*0.34;
+const height=new Float32Array(S*S);
+for(let y=0;y<S;y++)for(let x=0;x<S;x++){
+  const cx=(Math.floor(x/cell)+0.5)*cell, cy=(Math.floor(y/cell)+0.5)*cell;
+  const d=Math.hypot(x-cx,y-cy);
+  let h=0; if(d<R){ h=Math.cos(d/R*Math.PI*0.5); }      // smooth dome
+  // tiny surface noise so flats aren't perfectly clean
+  h+= ( (Math.sin(x*0.7)*Math.cos(y*0.7))*0.5+0.5 )*0.04;
+  height[y*S+x]=h;
+}
+const H=(x,y)=>height[((y+S)%S)*S+((x+S)%S)];
+
+function canvasFrom(fn){           // fn(x,y)->[r,g,b]
+  const c=document.createElement('canvas'); c.width=c.height=S; const ctx=c.getContext('2d');
+  const img=ctx.createImageData(S,S);
+  for(let y=0;y<S;y++)for(let x=0;x<S;x++){ const o=(y*S+x)*4; const [r,g,b]=fn(x,y);
+    img.data[o]=r; img.data[o+1]=g; img.data[o+2]=b; img.data[o+3]=255; }
+  ctx.putImageData(img,0,0); return c;
+}
+
+const albedoC = canvasFrom((x,y)=> H(x,y)>0.2 ? [70,130,200] : [40,46,58]);   // blue studs, dark plate
+const roughC  = canvasFrom((x,y)=>{ const v=H(x,y)>0.2?60:210; return [v,v,v]; }); // studs glossy, plate matte
+const metalC  = canvasFrom((x,y)=>{ const v=H(x,y)>0.2?255:0; return [v,v,v]; });  // studs metal
+const aoC     = canvasFrom((x,y)=>{ const v=Math.min(255,140+H(x,y)*115); return [v,v,v]; });
+const normalC = canvasFrom((x,y)=>{
+  const str=2.0;
+  const dx=(H(x+1,y)-H(x-1,y))*str, dy=(H(x,y+1)-H(x,y-1))*str;
+  let nx=-dx, ny=-dy, nz=1; const l=Math.hypot(nx,ny,nz); nx/=l;ny/=l;nz/=l;
+  return [ (nx*0.5+0.5)*255, (ny*0.5+0.5)*255, (nz*0.5+0.5)*255 ];
+});
+
+function tex(c,srgb){ const t=new THREE.CanvasTexture(c);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  if(srgb) t.colorSpace=THREE.SRGBColorSpace; return t; }
+const maps={
+  map:        tex(albedoC,true),
+  normalMap:  tex(normalC,false),
+  roughnessMap:tex(roughC,false),
+  metalnessMap:tex(metalC,false),
+  aoMap:      tex(aoC,false),
+};
+
+// ---------- scene ----------
+const view=document.getElementById('view');
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(view.clientWidth,view.clientHeight); renderer.setPixelRatio(devicePixelRatio);
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+view.appendChild(renderer.domElement);
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x111111);
+const pmrem=new THREE.PMREMGenerator(renderer);
+scene.environment=pmrem.fromScene(new RoomEnvironment(),0.04).texture; // reflections for metal
+const cam=new THREE.PerspectiveCamera(45,view.clientWidth/view.clientHeight,.1,100);
+cam.position.set(0,1.4,2.6);
+const controls=new OrbitControls(cam,renderer.domElement);
+
+// aoMap needs a second uv set (uv2); plane's uv works, copy it.
+const geo=new THREE.PlaneGeometry(2.4,2.4,1,1);
+geo.setAttribute('uv2', new THREE.BufferAttribute(geo.getAttribute('uv').array,2));
+
+const mat=new THREE.MeshStandardMaterial({
+  ...maps, roughness:1, metalness:1, color:0xffffff,
+});
+const mesh=new THREE.Mesh(geo,mat);
+mesh.rotation.x=-0.35;
+scene.add(mesh);
+
+const key=new THREE.DirectionalLight(0xffffff,2.5); scene.add(key);
+scene.add(new THREE.AmbientLight(0xffffff,0.15));
+
+// ---------- controls ----------
+const bind=(id,prop)=>document.getElementById(id).addEventListener('change',e=>{
+  mat[prop]= e.target.checked ? maps[prop] : null; mat.needsUpdate=true; });
+bind('m_map','map'); bind('m_normal','normalMap'); bind('m_rough','roughnessMap');
+bind('m_metal','metalnessMap'); bind('m_ao','aoMap');
+// metal starts off
+mat.metalnessMap=null;
+
+document.getElementById('nstr').addEventListener('input',e=>{
+  const s=parseFloat(e.target.value); mat.normalScale.set(s,s); });
+let lightAngle=1;
+document.getElementById('light').addEventListener('input',e=>lightAngle=parseFloat(e.target.value));
+
+// ---------- swatch previews ----------
+const sw=document.getElementById('swatch');
+[['albedo',albedoC],['normal',normalC],['rough',roughC],['metal',metalC],['ao',aoC]].forEach(([name,c])=>{
+  const fig=document.createElement('figure'); const cv=document.createElement('canvas');
+  cv.width=cv.height=84; cv.getContext('2d').drawImage(c,0,0,84,84);
+  const cap=document.createElement('figcaption'); cap.textContent=name;
+  fig.append(cv,cap); sw.append(fig);
+});
+
+addEventListener('resize',()=>{ renderer.setSize(view.clientWidth,view.clientHeight);
+  cam.aspect=view.clientWidth/view.clientHeight; cam.updateProjectionMatrix(); });
+(function loop(){ requestAnimationFrame(loop);
+  key.position.set(Math.cos(lightAngle)*3, 2, Math.sin(lightAngle)*3);
+  controls.update(); renderer.render(scene,cam);
+})();
+</script>
+</body>
+</html>

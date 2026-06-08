@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UV 01 — A single quad and 4 UV coordinates</title>
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; background:#111; color:#ddd; }
+  #wrap { display:flex; height:100vh; }
+  #view { flex:1; }
+  #panel { width:320px; padding:16px; box-sizing:border-box; background:#191919; overflow:auto; }
+  h1 { font-size:15px; margin:0 0 8px; color:#fff; }
+  p  { font-size:12px; line-height:1.5; color:#aaa; }
+  .row { margin:10px 0; }
+  label { font-size:11px; display:block; color:#9cf; }
+  input[type=range]{ width:100%; }
+  code { color:#fc9; }
+  #uvcanvas { background:#000; border:1px solid #333; display:block; margin-top:8px; }
+  a { color:#9cf; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="view"></div>
+  <div id="panel">
+    <h1>01 · UVs are just 4 numbers per corner</h1>
+    <p>This flat quad has <b>4 vertices</b>. Each one carries a 2D coordinate
+       <code>(u, v)</code> that says <i>"sample the texture image here."</i>
+       The texture is a labeled grid so you can see exactly which corner lands where.</p>
+    <p>Drag the sliders to move one corner's UV. Watch the image slide and stretch —
+       the geometry never moves, only the <i>addresses into the texture</i> change.</p>
+
+    <div class="row">
+      <label>Bottom-Left  u / v</label>
+      <input type="range" id="bl_u" min="0" max="1" step="0.01" value="0">
+      <input type="range" id="bl_v" min="0" max="1" step="0.01" value="0">
+    </div>
+    <div class="row">
+      <label>Bottom-Right u / v</label>
+      <input type="range" id="br_u" min="0" max="1" step="0.01" value="1">
+      <input type="range" id="br_v" min="0" max="1" step="0.01" value="0">
+    </div>
+    <div class="row">
+      <label>Top-Right u / v</label>
+      <input type="range" id="tr_u" min="0" max="1" step="0.01" value="1">
+      <input type="range" id="tr_v" min="0" max="1" step="0.01" value="1">
+    </div>
+    <div class="row">
+      <label>Top-Left u / v</label>
+      <input type="range" id="tl_u" min="0" max="1" step="0.01" value="0">
+      <input type="range" id="tl_v" min="0" max="1" step="0.01" value="1">
+    </div>
+
+    <p>The square below is "UV space" (the texture). Red dots show where your 4
+       corners currently point.</p>
+    <canvas id="uvcanvas" width="288" height="288"></canvas>
+    <p><a href="index.html">← back to index</a></p>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---- procedural texture: a 4x4 labeled grid so each region is identifiable ----
+function makeGridTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const x = c.getContext('2d');
+  const N = 4, s = c.width / N;
+  const cols = ['#e74c3c','#f39c12','#2ecc71','#3498db'];
+  for (let j=0;j<N;j++) for (let i=0;i<N;i++){
+    x.fillStyle = cols[(i+j)%cols.length];
+    x.fillRect(i*s, (N-1-j)*s, s, s);      // flip j so v=0 is at the bottom
+    x.fillStyle = 'rgba(0,0,0,.75)';
+    x.font = 'bold 34px monospace';
+    x.fillText(`${i},${j}`, i*s+10, (N-1-j)*s+40);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const view = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(view.clientWidth, view.clientHeight);
+renderer.setPixelRatio(devicePixelRatio);
+view.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x111111);
+const cam = new THREE.PerspectiveCamera(50, view.clientWidth/view.clientHeight, .1, 100);
+cam.position.set(0, 0, 3);
+const controls = new OrbitControls(cam, renderer.domElement);
+
+// ---- build the quad BY HAND so nothing is hidden ----
+// 4 vertices in the XY plane, 2 triangles, and an editable uv attribute.
+const geo = new THREE.BufferGeometry();
+const positions = new Float32Array([
+  -1,-1,0,   1,-1,0,   1,1,0,   -1,1,0,   // BL, BR, TR, TL
+]);
+const uvs = new Float32Array([ 0,0, 1,0, 1,1, 0,1 ]); // <-- the stars of the show
+geo.setAttribute('position', new THREE.BufferAttribute(positions,3));
+geo.setAttribute('uv',       new THREE.BufferAttribute(uvs,2));
+geo.setIndex([0,1,2,  0,2,3]); // two triangles sharing the BL→TR diagonal
+
+const mat  = new THREE.MeshBasicMaterial({ map: makeGridTexture(), side: THREE.DoubleSide });
+const mesh = new THREE.Mesh(geo, mat);
+scene.add(mesh);
+
+// ---- wire up sliders -> uv attribute ----
+const ids = ['bl','br','tr','tl'];
+const els = {};
+ids.forEach(id => { els[id+'_u']=document.getElementById(id+'_u'); els[id+'_v']=document.getElementById(id+'_v'); });
+
+const uvCanvas = document.getElementById('uvcanvas');
+const uctx = uvCanvas.getContext('2d');
+
+function syncUVs() {
+  const arr = geo.getAttribute('uv').array;
+  ids.forEach((id,i)=>{
+    arr[i*2]   = parseFloat(els[id+'_u'].value);
+    arr[i*2+1] = parseFloat(els[id+'_v'].value);
+  });
+  geo.getAttribute('uv').needsUpdate = true;
+  drawUVPanel(arr);
+}
+
+function drawUVPanel(arr){
+  const W = uvCanvas.width;
+  uctx.clearRect(0,0,W,W);
+  // faint grid to mirror the 4x4 texture
+  uctx.strokeStyle='#333';
+  for(let i=0;i<=4;i++){ const p=i*W/4;
+    uctx.beginPath(); uctx.moveTo(p,0); uctx.lineTo(p,W); uctx.stroke();
+    uctx.beginPath(); uctx.moveTo(0,p); uctx.lineTo(W,p); uctx.stroke(); }
+  // polygon connecting the 4 UV points (v flipped so it reads like the texture)
+  const px = u=>u*W, py = v=>(1-v)*W;
+  uctx.strokeStyle='#9cf'; uctx.beginPath();
+  ids.forEach((id,i)=>{ const u=arr[i*2],v=arr[i*2+1];
+    i?uctx.lineTo(px(u),py(v)):uctx.moveTo(px(u),py(v)); });
+  uctx.closePath(); uctx.stroke();
+  ids.forEach((id,i)=>{ const u=arr[i*2],v=arr[i*2+1];
+    uctx.fillStyle='#e74c3c'; uctx.beginPath();
+    uctx.arc(px(u),py(v),5,0,7); uctx.fill();
+    uctx.fillStyle='#fff'; uctx.font='11px monospace';
+    uctx.fillText(id,px(u)+7,py(v)); });
+}
+
+Object.values(els).forEach(e=>e.addEventListener('input', syncUVs));
+syncUVs();
+
+addEventListener('resize', ()=>{
+  renderer.setSize(view.clientWidth, view.clientHeight);
+  cam.aspect = view.clientWidth/view.clientHeight; cam.updateProjectionMatrix();
+});
+(function loop(){ requestAnimationFrame(loop); controls.update(); renderer.render(scene,cam); })();
+</script>
+</body>
+</html>

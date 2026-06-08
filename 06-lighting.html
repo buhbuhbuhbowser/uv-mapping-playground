@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UV 06 — The lighting formula, term by term</title>
+<style>
+  body { margin:0; font-family:system-ui,sans-serif; background:#111; color:#ddd; }
+  #wrap { display:flex; height:100vh; }
+  #view { flex:1; }
+  #panel { width:360px; padding:16px; box-sizing:border-box; background:#191919; overflow:auto; }
+  h1 { font-size:15px; margin:0 0 6px; color:#fff; }
+  p { font-size:12px; line-height:1.5; color:#aaa; }
+  b { color:#cde; } code { color:#fc9; }
+  .term { border:1px solid #2c2c2c; border-radius:6px; padding:8px; margin:8px 0; }
+  .term h3 { margin:0 0 4px; font-size:12px; color:#9cf; display:flex; align-items:center; gap:6px; }
+  .term .eq { font-family:monospace; font-size:10px; color:#fc9; }
+  label { font-size:11px; display:block; margin:5px 0 0; color:#bbb; }
+  input[type=range]{ width:100%; }
+  .modes button { background:#222;color:#ddd;border:1px solid #444;padding:4px 7px;border-radius:4px;margin:2px 2px 6px 0;font-size:11px;cursor:pointer;}
+  .modes button.on { background:#2a4a6a; border-color:#9cf; }
+  a { color:#9cf; }
+  .formula { font-family:monospace; font-size:11px; color:#9f9; background:#0d0d0d; padding:8px; border-radius:6px; line-height:1.6; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="view"></div>
+  <div id="panel">
+    <h1>06 · How the final pixel gets assembled</h1>
+    <p>Shading is just <b>adding up a few terms</b>. Each term is a small formula using the
+       surface normal <code>N</code>, the light direction <code>L</code>, the view direction
+       <code>V</code>, and the half-vector <code>H = normalize(L+V)</code>. Toggle terms,
+       drag sliders, and switch <b>View mode</b> to see each term <i>in isolation</i>.</p>
+
+    <div class="formula">final = ambient<br>&nbsp;&nbsp;+ diffuse · (N·L)<br>&nbsp;&nbsp;+ specular · (N·H)^shininess<br>&nbsp;&nbsp;+ fresnel · (1 − N·V)^p</div>
+
+    <div class="modes" style="margin-top:10px">
+      <b style="font-size:11px;color:#aaa">View mode:</b><br>
+      <button data-m="0" class="on">Combined</button>
+      <button data-m="1">Ambient</button>
+      <button data-m="2">Diffuse (N·L)</button>
+      <button data-m="3">Specular</button>
+      <button data-m="4">Fresnel rim</button>
+    </div>
+
+    <div class="term">
+      <h3><input type="checkbox" id="t_amb" checked> Ambient <span class="eq">flat fill light</span></h3>
+      <p style="margin:2px 0">Light bouncing from everywhere. Keeps shadows from being pure black.</p>
+      <label>strength <input type="range" id="amb" min="0" max="1" step="0.01" value="0.12"></label>
+    </div>
+    <div class="term">
+      <h3><input type="checkbox" id="t_dif" checked> Diffuse <span class="eq">·(N·L)</span></h3>
+      <p style="margin:2px 0">Matte brightness = how directly the surface faces the light.
+         <code>N·L</code> is 1 head-on, 0 at grazing. <b>This is what makes a sphere look round.</b></p>
+      <label>strength <input type="range" id="dif" min="0" max="2" step="0.01" value="1"></label>
+    </div>
+    <div class="term">
+      <h3><input type="checkbox" id="t_spec" checked> Specular <span class="eq">·(N·H)^shininess</span></h3>
+      <p style="margin:2px 0">The shiny highlight. High shininess = tiny sharp dot (glossy);
+         low = broad soft sheen (rough). This is the knob "roughness" controls.</p>
+      <label>strength <input type="range" id="spec" min="0" max="2" step="0.01" value="0.8"></label>
+      <label>shininess <input type="range" id="shin" min="1" max="200" step="1" value="48"></label>
+    </div>
+    <div class="term">
+      <h3><input type="checkbox" id="t_fres"> Fresnel rim <span class="eq">·(1−N·V)^p</span></h3>
+      <p style="margin:2px 0">Edges facing away from you brighten (grazing reflection).
+         Traces the silhouette — same trick as lesson 04's Fresnel driver.</p>
+      <label>strength <input type="range" id="fres" min="0" max="2" step="0.01" value="0.6"></label>
+      <label>power p <input type="range" id="fpow" min="0.5" max="6" step="0.1" value="3"></label>
+    </div>
+    <div class="term">
+      <h3>Scene</h3>
+      <label>light azimuth <input type="range" id="az" min="-3.14" max="3.14" step="0.01" value="0.8"></label>
+      <label>light elevation <input type="range" id="el" min="-1.5" max="1.5" step="0.01" value="0.6"></label>
+      <label>base color <input type="color" id="col" value="#3a78c8"></label>
+      <label><input type="checkbox" id="bumps"> use a normal map (vary N per pixel)</label>
+    </div>
+
+    <p><a href="05-sampling.html">← sampling</a> · <a href="index.html">index</a></p>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---- a procedural normal map (studs) so we can show N varying per-pixel ----
+const S=256, NC=5, cell=S/NC, R=cell*0.34;
+const hmap=new Float32Array(S*S);
+for(let y=0;y<S;y++)for(let x=0;x<S;x++){const cx=(Math.floor(x/cell)+.5)*cell,cy=(Math.floor(y/cell)+.5)*cell;
+  const d=Math.hypot(x-cx,y-cy); hmap[y*S+x]=d<R?Math.cos(d/R*Math.PI*0.5):0;}
+const Hh=(x,y)=>hmap[((y%S)+S)%S*S+((x%S)+S)%S];
+const nc=document.createElement('canvas'); nc.width=nc.height=S; const nx2=nc.getContext('2d');
+const nim=nx2.createImageData(S,S);
+for(let y=0;y<S;y++)for(let x=0;x<S;x++){const o=(y*S+x)*4;const s=2.5;
+  const dx=(Hh(x+1,y)-Hh(x-1,y))*s,dy=(Hh(x,y+1)-Hh(x,y-1))*s;
+  let vx=-dx,vy=-dy,vz=1;const l=Math.hypot(vx,vy,vz);
+  nim.data[o]=(vx/l*.5+.5)*255;nim.data[o+1]=(vy/l*.5+.5)*255;nim.data[o+2]=(vz/l*.5+.5)*255;nim.data[o+3]=255;}
+nx2.putImageData(nim,0,0);
+const normalTex=new THREE.CanvasTexture(nc); normalTex.wrapS=normalTex.wrapT=THREE.RepeatWrapping;
+
+const view=document.getElementById('view');
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(view.clientWidth,view.clientHeight);renderer.setPixelRatio(devicePixelRatio);
+view.appendChild(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x0e0e12);
+const cam=new THREE.PerspectiveCamera(45,view.clientWidth/view.clientHeight,.1,100);
+cam.position.set(0,0,3.4);
+const controls=new OrbitControls(cam,renderer.domElement);
+
+const mat=new THREE.ShaderMaterial({
+  uniforms:{
+    lightDir:{value:new THREE.Vector3()},
+    baseColor:{value:new THREE.Color(0x3a78c8)},
+    ambK:{value:0.12}, difK:{value:1.0}, specK:{value:0.8}, shin:{value:48.0},
+    fresK:{value:0.0}, fpow:{value:3.0},
+    mode:{value:0}, useBump:{value:0}, normalMap:{value:normalTex}, repeat:{value:3.0},
+  },
+  vertexShader:`
+    varying vec3 vN; varying vec3 vV; varying vec2 vUv; varying vec3 vPos;
+    void main(){
+      vUv=uv;
+      vN=normalize(normalMatrix*normal);
+      vec4 mv=modelViewMatrix*vec4(position,1.0);
+      vPos=mv.xyz; vV=normalize(-mv.xyz);
+      gl_Position=projectionMatrix*mv;
+    }`,
+  fragmentShader:`
+    uniform vec3 lightDir, baseColor; uniform float ambK,difK,specK,shin,fresK,fpow,repeat;
+    uniform int mode,useBump; uniform sampler2D normalMap;
+    varying vec3 vN; varying vec3 vV; varying vec2 vUv; varying vec3 vPos;
+    void main(){
+      vec3 N=normalize(vN);
+      if(useBump==1){
+        // cheap tangent-space perturb using screen-space derivatives
+        vec3 q0=dFdx(vPos), q1=dFdy(vPos);
+        vec2 st0=dFdx(vUv*repeat), st1=dFdy(vUv*repeat);
+        vec3 T=normalize(q0*st1.t-q1*st0.t);
+        vec3 B=normalize(cross(N,T));
+        vec3 nT=texture2D(normalMap,vUv*repeat).xyz*2.0-1.0;
+        N=normalize(mat3(T,B,N)*nT);
+      }
+      vec3 L=normalize(lightDir);
+      vec3 H=normalize(L+normalize(vV));
+      float ndl=max(dot(N,L),0.0);
+      float ndh=max(dot(N,H),0.0);
+      float ndv=max(dot(N,normalize(vV)),0.0);
+      vec3 amb=ambK*baseColor;
+      vec3 dif=difK*ndl*baseColor;
+      vec3 spec=vec3(specK*pow(ndh,shin));
+      vec3 fres=vec3(fresK*pow(1.0-ndv,fpow));
+      vec3 col;
+      if(mode==0) col=amb+dif+spec+fres;
+      else if(mode==1) col=amb;
+      else if(mode==2) col=vec3(ndl);          // show the raw N·L
+      else if(mode==3) col=spec;
+      else col=fres;
+      gl_FragColor=vec4(col,1.0);
+    }`,
+});
+
+const mesh=new THREE.Mesh(new THREE.SphereGeometry(1.2,96,64),mat);
+scene.add(mesh);
+// a little visible light gizmo
+const lightDot=new THREE.Mesh(new THREE.SphereGeometry(0.05,12,12),
+  new THREE.MeshBasicMaterial({color:0xffee88}));
+scene.add(lightDot);
+
+function num(id){return parseFloat(document.getElementById(id).value);}
+function bool(id){return document.getElementById(id).checked;}
+function updateLight(){
+  const az=num('az'), el=num('el');
+  const d=new THREE.Vector3(Math.cos(el)*Math.sin(az),Math.sin(el),Math.cos(el)*Math.cos(az)).normalize();
+  mat.uniforms.lightDir.value.copy(d);
+  lightDot.position.copy(d).multiplyScalar(2.0);
+}
+function updateAll(){
+  mat.uniforms.ambK.value = bool('t_amb')?num('amb'):0;
+  mat.uniforms.difK.value = bool('t_dif')?num('dif'):0;
+  mat.uniforms.specK.value= bool('t_spec')?num('spec'):0;
+  mat.uniforms.shin.value = num('shin');
+  mat.uniforms.fresK.value= bool('t_fres')?num('fres'):0;
+  mat.uniforms.fpow.value = num('fpow');
+  mat.uniforms.baseColor.value.set(document.getElementById('col').value);
+  mat.uniforms.useBump.value = bool('bumps')?1:0;
+  updateLight();
+}
+document.querySelectorAll('input').forEach(i=>i.addEventListener('input',updateAll));
+document.querySelectorAll('.modes button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.modes button').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); mat.uniforms.mode.value=+b.dataset.m;
+});
+updateAll();
+
+addEventListener('resize',()=>{renderer.setSize(view.clientWidth,view.clientHeight);
+  cam.aspect=view.clientWidth/view.clientHeight;cam.updateProjectionMatrix();});
+(function loop(){requestAnimationFrame(loop);controls.update();renderer.render(scene,cam);})();
+</script>
+</body>
+</html>

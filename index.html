@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UV Mapping — intuition playground</title>
+<style>
+  body { margin:0; font-family:system-ui,sans-serif; background:#111; color:#ddd;
+         display:flex; min-height:100vh; align-items:center; justify-content:center; }
+  .card { max-width:640px; padding:32px; }
+  h1 { color:#fff; }
+  ol { line-height:1.7; }
+  a { color:#9cf; font-weight:600; text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  p { color:#aaa; line-height:1.6; }
+  .note { font-size:12px; color:#777; border-top:1px solid #333; margin-top:24px; padding-top:12px; }
+  code { color:#fc9; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>UV Mapping — built up from primitives</h1>
+  <p>Three lessons, each adding one idea. Orbit with the mouse; tweak the controls on the right.</p>
+  <ol>
+    <li><a href="01-quad.html">A single quad &amp; 4 UV coordinates</a><br>
+        <span style="color:#888;font-size:13px">UVs are just 2 numbers per vertex. Drag them, watch the texture slide.</span></li>
+    <li><a href="02-unwrap.html">Unwrapping, seams &amp; distortion</a><br>
+        <span style="color:#888;font-size:13px">See a real mesh flattened into UV space; spot where the mapping has to cheat.</span></li>
+    <li><a href="03-pbr.html">Beyond RGB: PBR texture channels</a><br>
+        <span style="color:#888;font-size:13px">Same UVs, extra images — normal / roughness / metal / AO. Fake bumps on a flat plane.</span></li>
+    <li><a href="04-stylize.html">Stylizing with gradient ramps</a><br>
+        <span style="color:#888;font-size:13px">Drive a 1-D gradient by UV / Fresnel / height to add form and highlight seams.</span></li>
+    <li><a href="05-sampling.html">What "sampling" actually means</a><br>
+        <span style="color:#888;font-size:13px">Hover the surface; watch the same (u,v) read one value from every map at once.</span></li>
+    <li><a href="06-lighting.html">The lighting formula, term by term</a><br>
+        <span style="color:#888;font-size:13px">Toggle ambient / diffuse / specular / Fresnel and watch the final pixel get assembled.</span></li>
+  </ol>
+  <p class="note">Pure HTML + Three.js (loaded from a CDN, so you need internet the first time).
+     All textures are generated procedurally in-canvas — no asset files.
+     Serve the folder with <code>python -m http.server</code> and open
+     <code>http://localhost:8000/</code>, or just double-click <code>index.html</code>.</p>
+</div>
+</body>
+</html>

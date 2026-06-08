@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UV 02 — Unwrapping, seams, and distortion</title>
+<style>
+  body { margin:0; font-family:system-ui,sans-serif; background:#111; color:#ddd; }
+  #wrap { display:flex; height:100vh; }
+  #view { flex:1; }
+  #panel { width:340px; padding:16px; box-sizing:border-box; background:#191919; overflow:auto; }
+  h1 { font-size:15px; margin:0 0 8px; color:#fff; }
+  p { font-size:12px; line-height:1.5; color:#aaa; }
+  select, button { background:#222; color:#ddd; border:1px solid #444; padding:5px; border-radius:4px; }
+  .row { margin:10px 0; }
+  code { color:#fc9; } b { color:#cde; }
+  #uvcanvas { background:#000; border:1px solid #333; display:block; margin-top:8px; }
+  a { color:#9cf; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="view"></div>
+  <div id="panel">
+    <h1>02 · Unwrapping = flattening 3D onto the UV square</h1>
+    <p>Every built-in primitive already ships with a <code>uv</code> attribute — someone
+       decided how to flatten it. The canvas below draws that mesh's <i>actual triangles
+       in UV space</i>. That picture <b>is</b> the unwrap.</p>
+    <p>Watch for two things:</p>
+    <p>• <b>Distortion</b> — with the checkerboard, even squares = faithful mapping;
+       squished/stretched squares (e.g. a sphere's poles) = the flattening had to cheat.</p>
+    <p>• <b>Seams</b> — edges where the surface was cut to lay flat (the back of the
+       sphere, the cube's net). Textures can visibly break across a seam.</p>
+
+    <div class="row">
+      <label style="font-size:11px;color:#9cf">Geometry</label><br>
+      <select id="geo">
+        <option value="plane">Plane (no distortion, no seam)</option>
+        <option value="box">Box (6 faces, hard seams)</option>
+        <option value="sphere" selected>UV Sphere (pole pinching)</option>
+        <option value="cyl">Cylinder</option>
+        <option value="torus">Torus</option>
+        <option value="knot">Torus Knot (ugly stretch)</option>
+      </select>
+    </div>
+    <div class="row">
+      <label style="font-size:11px;color:#9cf">Texture</label><br>
+      <select id="tex">
+        <option value="check">Checkerboard (reveals distortion)</option>
+        <option value="grad">UV gradient (u=red, v=green)</option>
+      </select>
+      <button id="wire">toggle wireframe</button>
+    </div>
+
+    <p>UV layout (the unwrap of the current mesh):</p>
+    <canvas id="uvcanvas" width="308" height="308"></canvas>
+    <p><a href="index.html">← index</a> · <a href="03-pbr.html">next: beyond RGB →</a></p>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+function checkerTex(){
+  const c=document.createElement('canvas'); c.width=c.height=512; const x=c.getContext('2d');
+  const N=8,s=c.width/N;
+  for(let j=0;j<N;j++)for(let i=0;i<N;i++){ x.fillStyle=((i+j)&1)?'#fff':'#444'; x.fillRect(i*s,j*s,s,s); }
+  // colored axes so orientation is readable
+  x.fillStyle='#e74c3c'; x.fillRect(0,c.height-12,c.width,12);   // u axis (bottom)
+  x.fillStyle='#2ecc71'; x.fillRect(0,0,12,c.height);            // v axis (left)
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; return t;
+}
+function gradTex(){
+  const c=document.createElement('canvas'); c.width=c.height=512; const x=c.getContext('2d');
+  const img=x.createImageData(c.width,c.height);
+  for(let j=0;j<c.height;j++)for(let i=0;i<c.width;i++){ const o=(j*c.width+i)*4;
+    img.data[o]=i/c.width*255; img.data[o+1]=(1-j/c.height)*255; img.data[o+2]=64; img.data[o+3]=255; }
+  x.putImageData(img,0,0);
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; return t;
+}
+
+const view=document.getElementById('view');
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(view.clientWidth,view.clientHeight); renderer.setPixelRatio(devicePixelRatio);
+view.appendChild(renderer.domElement);
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x111111);
+const cam=new THREE.PerspectiveCamera(50,view.clientWidth/view.clientHeight,.1,100);
+cam.position.set(2.4,1.6,2.4);
+const controls=new OrbitControls(cam,renderer.domElement);
+
+const textures={ check:checkerTex(), grad:gradTex() };
+const mat=new THREE.MeshBasicMaterial({ map:textures.check });
+let mesh=null;
+
+function makeGeo(kind){
+  switch(kind){
+    case 'plane':  return new THREE.PlaneGeometry(2,2,1,1);
+    case 'box':    return new THREE.BoxGeometry(1.6,1.6,1.6);
+    case 'sphere': return new THREE.SphereGeometry(1.2,32,24);
+    case 'cyl':    return new THREE.CylinderGeometry(1,1,2,32,1);
+    case 'torus':  return new THREE.TorusGeometry(1,.4,24,48);
+    case 'knot':   return new THREE.TorusKnotGeometry(.9,.3,128,16);
+  }
+}
+function setGeo(kind){
+  if(mesh){ scene.remove(mesh); mesh.geometry.dispose(); }
+  mesh=new THREE.Mesh(makeGeo(kind),mat); scene.add(mesh);
+  drawUV(mesh.geometry);
+}
+
+// draw the mesh's actual triangles in UV space — this is the unwrap
+const uvCanvas=document.getElementById('uvcanvas'), uctx=uvCanvas.getContext('2d');
+function drawUV(g){
+  const W=uvCanvas.width; uctx.fillStyle='#000'; uctx.fillRect(0,0,W,W);
+  uctx.strokeStyle='#2a2a2a';
+  for(let i=0;i<=4;i++){const p=i*W/4;
+    uctx.beginPath();uctx.moveTo(p,0);uctx.lineTo(p,W);uctx.stroke();
+    uctx.beginPath();uctx.moveTo(0,p);uctx.lineTo(W,p);uctx.stroke();}
+  const uv=g.getAttribute('uv'); if(!uv) return;
+  const idx=g.getIndex();
+  const px=u=>u*W, py=v=>(1-v)*W;
+  uctx.strokeStyle='rgba(120,200,255,.5)'; uctx.lineWidth=1;
+  const tri=(a,b,c)=>{ uctx.beginPath();
+    uctx.moveTo(px(uv.getX(a)),py(uv.getY(a)));
+    uctx.lineTo(px(uv.getX(b)),py(uv.getY(b)));
+    uctx.lineTo(px(uv.getX(c)),py(uv.getY(c)));
+    uctx.closePath(); uctx.stroke(); };
+  if(idx){ for(let i=0;i<idx.count;i+=3) tri(idx.getX(i),idx.getX(i+1),idx.getX(i+2)); }
+  else   { for(let i=0;i<uv.count;i+=3) tri(i,i+1,i+2); }
+}
+
+document.getElementById('geo').addEventListener('change',e=>setGeo(e.target.value));
+document.getElementById('tex').addEventListener('change',e=>{ mat.map=textures[e.target.value]; mat.needsUpdate=true; });
+document.getElementById('wire').addEventListener('click',()=>{ mat.wireframe=!mat.wireframe; });
+
+setGeo('sphere');
+addEventListener('resize',()=>{ renderer.setSize(view.clientWidth,view.clientHeight);
+  cam.aspect=view.clientWidth/view.clientHeight; cam.updateProjectionMatrix(); });
+(function loop(){requestAnimationFrame(loop);controls.update();renderer.render(scene,cam);})();
+</script>
+</body>
+</html>

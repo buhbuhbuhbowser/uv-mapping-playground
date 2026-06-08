@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UV 05 — What sampling actually means</title>
+<style>
+  body { margin:0; font-family:system-ui,sans-serif; background:#111; color:#ddd; }
+  #wrap { display:flex; height:100vh; }
+  #view { flex:1; cursor:crosshair; }
+  #panel { width:380px; padding:16px; box-sizing:border-box; background:#191919; overflow:auto; }
+  h1 { font-size:15px; margin:0 0 6px; color:#fff; }
+  p { font-size:12px; line-height:1.5; color:#aaa; }
+  b { color:#cde; } code { color:#fc9; }
+  .modes button { background:#222;color:#ddd;border:1px solid #444;padding:5px 8px;border-radius:4px;margin:2px 2px 8px 0;font-size:11px;cursor:pointer;}
+  .modes button.on { background:#2a4a6a; border-color:#9cf; }
+  table { width:100%; border-collapse:collapse; font-size:11px; }
+  td { padding:4px; border-bottom:1px solid #262626; vertical-align:middle; }
+  .mapcanvas { width:64px; height:64px; border:1px solid #333; display:block; }
+  .name { color:#9cf; font-weight:600; }
+  .val { color:#eee; font-family:monospace; }
+  .desc { color:#888; font-size:10px; }
+  .uvbadge { font-family:monospace; color:#fc9; }
+  a { color:#9cf; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="view"></div>
+  <div id="panel">
+    <h1>05 · "Sampling" = read one pixel per surface point</h1>
+    <p><b>Hover the surface.</b> The dot on each texture image below jumps to the
+       <span class="uvbadge">(u,v)</span> you're touching. The GPU does exactly this for
+       <i>every</i> pixel it draws — it reads one value from each image at that address and
+       feeds them into the lighting formula.</p>
+
+    <div class="modes">
+      <b style="font-size:11px;color:#aaa">View mode:</b><br>
+      <button data-m="lit" class="on">Final (lit PBR)</button>
+      <button data-m="albedo">Albedo only (no light)</button>
+      <button data-m="normalcol">Normal map as color</button>
+      <button data-m="plain">Geometry only (no maps)</button>
+    </div>
+
+    <p class="uvbadge" id="uvreadout">point at the surface…</p>
+    <table id="tbl"></table>
+    <p><a href="04-stylize.html">← stylize</a> · <a href="index.html">index</a></p>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---- same "studs on a plate" maps as lesson 03, keep the 2D contexts to read pixels ----
+const S=512, N=6, cell=S/N, R=cell*0.34;
+const height=new Float32Array(S*S);
+for(let y=0;y<S;y++)for(let x=0;x<S;x++){
+  const cx=(Math.floor(x/cell)+0.5)*cell, cy=(Math.floor(y/cell)+0.5)*cell;
+  const d=Math.hypot(x-cx,y-cy); let h=d<R?Math.cos(d/R*Math.PI*0.5):0;
+  h+=((Math.sin(x*0.7)*Math.cos(y*0.7))*0.5+0.5)*0.04; height[y*S+x]=h;
+}
+const H=(x,y)=>height[((y%S)+S)%S*S+((x%S)+S)%S];
+function mk(fn){ const c=document.createElement('canvas');c.width=c.height=S;const x=c.getContext('2d',{willReadFrequently:true});
+  const img=x.createImageData(S,S);
+  for(let y=0;y<S;y++)for(let x2=0;x2<S;x2++){const o=(y*S+x2)*4;const[r,g,b]=fn(x2,y);
+    img.data[o]=r;img.data[o+1]=g;img.data[o+2]=b;img.data[o+3]=255;}
+  x.putImageData(img,0,0); return c; }
+const albedoC=mk((x,y)=>H(x,y)>0.2?[70,130,200]:[40,46,58]);
+const roughC =mk((x,y)=>{const v=H(x,y)>0.2?50:215;return[v,v,v];});
+const metalC =mk((x,y)=>{const v=H(x,y)>0.2?255:0;return[v,v,v];});
+const aoC    =mk((x,y)=>{const v=Math.min(255,140+H(x,y)*115);return[v,v,v];});
+const normalC=mk((x,y)=>{const s=2.0;const dx=(H(x+1,y)-H(x-1,y))*s,dy=(H(x,y+1)-H(x,y-1))*s;
+  let nx=-dx,ny=-dy,nz=1;const l=Math.hypot(nx,ny,nz);return[(nx/l*.5+.5)*255,(ny/l*.5+.5)*255,(nz/l*.5+.5)*255];});
+
+function tex(c,srgb){const t=new THREE.CanvasTexture(c);if(srgb)t.colorSpace=THREE.SRGBColorSpace;return t;}
+
+const view=document.getElementById('view');
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(view.clientWidth,view.clientHeight);renderer.setPixelRatio(devicePixelRatio);
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+view.appendChild(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x111111);
+const pmrem=new THREE.PMREMGenerator(renderer);
+scene.environment=pmrem.fromScene(new RoomEnvironment(),0.04).texture;
+const cam=new THREE.PerspectiveCamera(45,view.clientWidth/view.clientHeight,.1,100);
+cam.position.set(0,0.6,3);
+const controls=new OrbitControls(cam,renderer.domElement);
+
+const geo=new THREE.SphereGeometry(1.2,64,48);
+geo.setAttribute('uv2',new THREE.BufferAttribute(geo.getAttribute('uv').array,2));
+
+const litMat=new THREE.MeshStandardMaterial({
+  map:tex(albedoC,true), normalMap:tex(normalC,false), roughnessMap:tex(roughC,false),
+  metalnessMap:tex(metalC,false), aoMap:tex(aoC,false), roughness:1, metalness:1,
+});
+const albedoMat=new THREE.MeshBasicMaterial({map:tex(albedoC,true)});
+const normalColMat=new THREE.MeshBasicMaterial({map:tex(normalC,true)});
+const plainMat=new THREE.MeshStandardMaterial({color:0x888888,roughness:0.6,metalness:0});
+const mats={lit:litMat,albedo:albedoMat,normalcol:normalColMat,plain:plainMat};
+
+const mesh=new THREE.Mesh(geo,litMat);scene.add(mesh);
+scene.add(new THREE.DirectionalLight(0xffffff,2.2).translateX(3).translateY(2).translateZ(2));
+scene.add(new THREE.AmbientLight(0xffffff,0.2));
+const marker=new THREE.Mesh(new THREE.SphereGeometry(0.04,16,16),
+  new THREE.MeshBasicMaterial({color:0xff3030}));
+marker.visible=false; scene.add(marker);
+
+document.querySelectorAll('.modes button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.modes button').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); mesh.material=mats[b.dataset.m];
+});
+
+// ---- build the sampling table: a small canvas per map + readout cell ----
+const rows=[
+  ['albedo',albedoC,'base color','RGB color painted on the surface'],
+  ['normal',normalC,'direction','RGB packs a vector → tilts the surface for fake bumps'],
+  ['roughness',roughC,'0=mirror 1=matte','how sharp the highlight is'],
+  ['metalness',metalC,'0=plastic 1=metal','metal tints reflections by the color'],
+  ['ao',aoC,'occlusion','how blocked from ambient light (darkens nooks)'],
+];
+const tbl=document.getElementById('tbl'); const previews={};
+rows.forEach(([key,canvas,short,desc])=>{
+  const tr=document.createElement('tr');
+  const tdImg=document.createElement('td'); const cv=document.createElement('canvas');
+  cv.width=cv.height=64; cv.className='mapcanvas'; cv.getContext('2d').drawImage(canvas,0,0,64,64);
+  previews[key]={cv,src:canvas}; tdImg.appendChild(cv);
+  const td2=document.createElement('td');
+  td2.innerHTML=`<div class="name">${key}</div><div class="desc">${desc}</div>`;
+  const td3=document.createElement('td'); td3.innerHTML=`<div class="val" id="v_${key}">—</div><div class="desc">${short}</div>`;
+  tr.append(tdImg,td2,td3); tbl.appendChild(tr);
+});
+
+const ray=new THREE.Raycaster(), ndc=new THREE.Vector2();
+function readPixel(canvas,u,v){ const x=Math.min(S-1,Math.floor(u*S)), y=Math.min(S-1,Math.floor((1-v)*S));
+  return canvas.getContext('2d',{willReadFrequently:true}).getImageData(x,y,1,1).data; }
+function interpNormal(p){ const nx=(p[0]/255-.5)*2, ny=(p[1]/255-.5)*2;
+  const dir=Math.abs(nx)<.08&&Math.abs(ny)<.08?'flat (facing out)':
+    `${ny>0?'up':'down'}-${nx>0?'right':'left'}`; return dir; }
+
+view.addEventListener('pointermove',e=>{
+  const r=renderer.domElement.getBoundingClientRect();
+  ndc.x=((e.clientX-r.left)/r.width)*2-1; ndc.y=-((e.clientY-r.top)/r.height)*2+1;
+  ray.setFromCamera(ndc,cam);
+  const hit=ray.intersectObject(mesh)[0];
+  if(!hit||!hit.uv){ marker.visible=false; return; }
+  marker.visible=true; marker.position.copy(hit.point);
+  const {x:u,y:v}=hit.uv;
+  document.getElementById('uvreadout').textContent=`(u, v) = (${u.toFixed(3)}, ${v.toFixed(3)})`;
+  // redraw each preview with a dot at the sampled location + numeric readout
+  rows.forEach(([key])=>{
+    const {cv,src}=previews[key]; const c=cv.getContext('2d');
+    c.drawImage(src,0,0,64,64);
+    c.strokeStyle='#ff3030'; c.lineWidth=2; c.beginPath();
+    c.arc(u*64,(1-v)*64,4,0,7); c.stroke();
+    const p=readPixel(src,u,v); const el=document.getElementById('v_'+key);
+    if(key==='albedo') el.textContent=`rgb(${p[0]},${p[1]},${p[2]})`;
+    else if(key==='normal') el.textContent=interpNormal(p);
+    else el.textContent=(p[0]/255).toFixed(2);
+  });
+});
+
+addEventListener('resize',()=>{renderer.setSize(view.clientWidth,view.clientHeight);
+  cam.aspect=view.clientWidth/view.clientHeight;cam.updateProjectionMatrix();});
+(function loop(){requestAnimationFrame(loop);controls.update();renderer.render(scene,cam);})();
+</script>
+</body>
+</html>

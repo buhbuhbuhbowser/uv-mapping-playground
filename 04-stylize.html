@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UV 04 — Stylizing with gradient ramps</title>
+<style>
+  body { margin:0; font-family:system-ui,sans-serif; background:#111; color:#ddd; }
+  #wrap { display:flex; height:100vh; }
+  #view { flex:1; }
+  #panel { width:340px; padding:16px; box-sizing:border-box; background:#191919; overflow:auto; }
+  h1 { font-size:15px; margin:0 0 8px; color:#fff; }
+  p { font-size:12px; line-height:1.5; color:#aaa; }
+  label { font-size:12px; display:block; margin:6px 0; color:#9cf; }
+  select,button { background:#222; color:#ddd; border:1px solid #444; padding:5px; border-radius:4px; }
+  input[type=range]{ width:100%; }
+  code { color:#fc9; } b { color:#cde; }
+  .ramp { width:100%; height:22px; border:1px solid #333; margin-top:4px; image-rendering:pixelated; }
+  a { color:#9cf; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="view"></div>
+  <div id="panel">
+    <h1>04 · Gradient ramps = stylize &amp; add form</h1>
+    <p>A <b>ramp</b> is a 1-D gradient strip. Instead of lighting picking the color directly,
+       we compute one <b>driver value</b> per pixel and use it to look up a color in the ramp.
+       Change what drives it:</p>
+    <label>Driver
+      <select id="mode">
+        <option value="0">UV.v — vertical position in UV space (reveals seams)</option>
+        <option value="1" selected>Fresnel — faces away from you (rim = instant form)</option>
+        <option value="2">World height (Y)</option>
+        <option value="3">Lighting amount (toon banding)</option>
+      </select>
+    </label>
+    <label>Palette
+      <select id="pal">
+        <option>sunset</option><option>ice</option><option>toon</option>
+        <option>viridis</option><option>fire</option>
+      </select>
+      <canvas id="rampview" class="ramp" width="256" height="1"></canvas>
+    </label>
+    <label>Geometry
+      <select id="geo">
+        <option value="knot" selected>Torus Knot</option>
+        <option value="sphere">Sphere</option>
+        <option value="torus">Torus</option>
+        <option value="suz">Icosahedron</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="bands"> Quantize into bands (toon steps)</label>
+    <label>Fresnel power <input type="range" id="fpow" min="0.5" max="6" step="0.1" value="2.5"></label>
+
+    <p><b>Why it adds dimensionality:</b> the Fresnel driver brightens exactly the pixels
+       at the silhouette's edge, tracing the form — your eye reads that as roundness with
+       zero extra geometry. The UV driver instead jumps at <b>seams</b>, outlining them.</p>
+    <p><a href="03-pbr.html">← PBR</a> · <a href="index.html">index</a> · <a href="05-sampling.html">next: what sampling means →</a></p>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---- 1-D gradient ramps as 256x1 textures ----
+const palettes = {
+  sunset:  [[20,12,40],[120,30,90],[230,90,70],[250,200,90]],
+  ice:     [[8,12,30],[30,90,150],[120,200,230],[235,250,255]],
+  toon:    [[40,50,70],[40,50,70],[90,140,200],[235,245,255]],
+  viridis: [[68,1,84],[59,82,139],[33,145,140],[253,231,37]],
+  fire:    [[0,0,0],[120,20,0],[240,120,0],[255,255,180]],
+};
+function rampTexture(name){
+  const stops=palettes[name], c=document.createElement('canvas'); c.width=256;c.height=1;
+  const x=c.getContext('2d'); const g=x.createLinearGradient(0,0,256,0);
+  stops.forEach((s,i)=>g.addColorStop(i/(stops.length-1),`rgb(${s[0]},${s[1]},${s[2]})`));
+  x.fillStyle=g; x.fillRect(0,0,256,1);
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace;
+  t.wrapS=t.wrapT=THREE.ClampToEdgeWrapping; t.preview=c; return t;
+}
+
+const view=document.getElementById('view');
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(view.clientWidth,view.clientHeight); renderer.setPixelRatio(devicePixelRatio);
+view.appendChild(renderer.domElement);
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x0e0e12);
+const cam=new THREE.PerspectiveCamera(45,view.clientWidth/view.clientHeight,.1,100);
+cam.position.set(0,0,4.2);
+const controls=new OrbitControls(cam,renderer.domElement);
+
+// ---- the custom shader that does the ramp lookup ----
+const mat=new THREE.ShaderMaterial({
+  uniforms:{
+    ramp:{value:rampTexture('sunset')},
+    mode:{value:1}, bands:{value:0}, fpow:{value:2.5},
+    lightDir:{value:new THREE.Vector3(0.5,0.8,0.6).normalize()},
+  },
+  vertexShader:`
+    varying vec3 vN; varying vec3 vView; varying vec2 vUv; varying float vY;
+    void main(){
+      vUv=uv;
+      vN=normalize(normalMatrix*normal);
+      vec4 mv=modelViewMatrix*vec4(position,1.0);
+      vView=normalize(-mv.xyz);
+      vY=position.y;
+      gl_Position=projectionMatrix*mv;
+    }`,
+  fragmentShader:`
+    uniform sampler2D ramp; uniform int mode; uniform int bands;
+    uniform float fpow; uniform vec3 lightDir;
+    varying vec3 vN; varying vec3 vView; varying vec2 vUv; varying float vY;
+    void main(){
+      vec3 N=normalize(vN);
+      float driver;
+      if(mode==0) driver=vUv.y;
+      else if(mode==1) driver=pow(1.0-max(dot(N,normalize(vView)),0.0),fpow);
+      else if(mode==2) driver=clamp(vY*0.5+0.5,0.0,1.0);
+      else driver=max(dot(N,normalize(lightDir)),0.0);
+      if(bands==1) driver=floor(driver*4.0)/3.0;
+      vec3 col=texture2D(ramp,vec2(clamp(driver,0.001,0.999),0.5)).rgb;
+      gl_FragColor=vec4(col,1.0);
+    }`,
+});
+
+let mesh=null;
+function makeGeo(k){
+  if(k==='knot') return new THREE.TorusKnotGeometry(0.9,0.3,200,24);
+  if(k==='sphere') return new THREE.SphereGeometry(1.3,48,32);
+  if(k==='torus') return new THREE.TorusGeometry(1,0.42,32,64);
+  return new THREE.IcosahedronGeometry(1.4,1);
+}
+function setGeo(k){ if(mesh){scene.remove(mesh);mesh.geometry.dispose();}
+  mesh=new THREE.Mesh(makeGeo(k),mat); scene.add(mesh); }
+
+function showRamp(name){ const t=rampTexture(name); mat.uniforms.ramp.value=t;
+  const rv=document.getElementById('rampview'); rv.getContext('2d').drawImage(t.preview,0,0); }
+
+document.getElementById('mode').onchange=e=>mat.uniforms.mode.value=+e.target.value;
+document.getElementById('bands').onchange=e=>mat.uniforms.bands.value=e.target.checked?1:0;
+document.getElementById('fpow').oninput=e=>mat.uniforms.fpow.value=+e.target.value;
+document.getElementById('pal').onchange=e=>showRamp(e.target.value);
+document.getElementById('geo').onchange=e=>setGeo(e.target.value);
+
+showRamp('sunset'); setGeo('knot');
+addEventListener('resize',()=>{renderer.setSize(view.clientWidth,view.clientHeight);
+  cam.aspect=view.clientWidth/view.clientHeight;cam.updateProjectionMatrix();});
+(function loop(){requestAnimationFrame(loop);controls.update();renderer.render(scene,cam);})();
+</script>
+</body>
+</html>
