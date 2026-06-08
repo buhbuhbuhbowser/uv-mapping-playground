@@ -1,6 +1,11 @@
 {
   "redirects": [
     {
+      "source": "/",
+      "destination": "https://how-pixels-happen.vercel.app/uv-mapping/",
+      "permanent": false
+    },
+    {
       "source": "/:path*",
       "destination": "https://how-pixels-happen.vercel.app/uv-mapping/:path*",
       "permanent": false
